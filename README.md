@@ -6,6 +6,8 @@ Help finding the chain of inheritance (group memberships across Entra and DevOps
 
 InheritanceHelper is a PowerShell script that traces group membership chains from a user to a target group across both Azure DevOps and Microsoft Entra ID (formerly Azure Active Directory). This is particularly useful for understanding why a user has certain permissions through nested group memberships.
 
+> **Note**: This script was generated via GitHub Copilot and while it appears to function as designed, the creator has not had time yet to fully review and hopefully refactor. This is a large script that may benefit from additional optimization and code review.
+
 ## Features
 
 - **Cross-Platform Authentication**: Automatically handles Azure authentication using the Az PowerShell module
