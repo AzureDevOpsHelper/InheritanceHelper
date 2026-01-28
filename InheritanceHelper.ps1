@@ -207,7 +207,7 @@ function Get-UserEntraGroups {
         [string]$GraphAuthHeader
     )
 
-    Write-Host "Getting user's Entra (AAD) group memberships..." -ForegroundColor Yellow
+    Write-Host "Getting user's Entra group memberships..." -ForegroundColor Yellow
     
     try {
         # Get user object first
@@ -306,7 +306,7 @@ function Get-UserGroupMemberships {
     
     Write-Host "  Found $($groups.Count) Azure DevOps group memberships" -ForegroundColor Green
     
-    # Also get Entra (AAD) groups (direct only)
+    # Also get Entra groups (direct only)
     $aadGroups = Get-UserEntraGroups -UserPrincipalName $UserPrincipalName -GraphAuthHeader $GraphAuthHeader
     
     # Combine both sets of groups using ArrayList to preserve object properties
@@ -349,7 +349,7 @@ function Expand-GroupMemberships {
     # Only groups with origin=aad WITHOUT a Descriptor need to be looked up in the cache
     
     if ($Group.Origin -eq "vsts" -or ($Group.Origin -eq "aad" -and $null -ne $Group.Descriptor -and $Group.Descriptor -ne "")) {
-        # This is a DevOps group (either native VSTS or synced AAD with descriptor)
+        # This is a DevOps group (either native VSTS or synced Entra with descriptor)
         # Use Azure DevOps API to get parent groups
         $vsspsUrl = $OrgUrl.Replace("dev.azure.com", "vssps.dev.azure.com")
         
@@ -537,7 +537,7 @@ function Build-GroupHierarchy {
     
     $currentLevel = 0
     
-    Write-Host "\nTraversing group hierarchy (with parallel processing)..." -ForegroundColor Yellow
+    Write-Host "`nTraversing group hierarchy (with parallel processing)..." -ForegroundColor Yellow
     
     while ($sharedData['Queue'].Count -gt 0) {
         # Get current level groups
@@ -613,11 +613,12 @@ function Build-GroupHierarchy {
                         $sharedData['Relationships'].Add($relationship) | Out-Null
                         
                         # Check if parent is the target
-                        # Debug: Show all parent groups that contain "Release" in the name
-                        if ($parent.DisplayName -like "*Release*" -or $parent.PrincipalName -like "*Release*") {
-                            Write-Host "      DEBUG: Found Release group - DisplayName: '$($parent.DisplayName)', PrincipalName: '$($parent.PrincipalName)'" -ForegroundColor Magenta
-                            Write-Host "      DEBUG: Target name: '$TargetGroupName'" -ForegroundColor Magenta
-                            Write-Host "      DEBUG: Match DisplayName? $($parent.DisplayName -eq $TargetGroupName), Match PrincipalName? $($parent.PrincipalName -eq $TargetGroupName)" -ForegroundColor Magenta
+                        if ($VerbosePreference -ne 'SilentlyContinue') {
+                            if ($parent.DisplayName -like "*Release*" -or $parent.PrincipalName -like "*Release*") {
+                                Write-Host "      DEBUG: Found Release group - DisplayName: '$($parent.DisplayName)', PrincipalName: '$($parent.PrincipalName)'" -ForegroundColor Magenta
+                                Write-Host "      DEBUG: Target name: '$TargetGroupName'" -ForegroundColor Magenta
+                                Write-Host "      DEBUG: Match DisplayName? $($parent.DisplayName -eq $TargetGroupName), Match PrincipalName? $($parent.PrincipalName -eq $TargetGroupName)" -ForegroundColor Magenta
+                            }
                         }
                         
                         if ($parent.DisplayName -eq $TargetGroupName -or $parent.PrincipalName -eq $TargetGroupName) {
@@ -1078,26 +1079,46 @@ function Main {
         Write-Host "Found $($initialGroups.Count) group memberships" -ForegroundColor Green
         
         if ($initialGroups.Count -eq 0) {
-            Write-Warning "User is not a member of any groups"
+            Write-Host "`n=== RESULTS ===" -ForegroundColor Cyan
+            Write-Host "User is not a member of any groups" -ForegroundColor Yellow
+            Write-Host "No inheritance paths can be traced." -ForegroundColor Yellow
             return
         }
         
         # Build complete hierarchy
-        Write-Host "\nBuilding group hierarchy (expanding groups on-demand)..." -ForegroundColor Yellow
+        Write-Host "`nBuilding group hierarchy (expanding groups on-demand)..." -ForegroundColor Yellow
         
         # Get script path for thread jobs
         $scriptPath = $MyInvocation.MyCommand.Path
-        if (-not $scriptPath) {
-            $scriptPath = Get-ChildItem -Path "$((Get-Location).Path)\Find-GroupInheritanceChains.ps1" -ErrorAction Stop | Select-Object -ExpandProperty FullName -First 1
+        if (-not $scriptPath -or $scriptPath -eq '') {
+            $scriptPath = $PSCommandPath
+        }
+        if (-not $scriptPath -or $scriptPath -eq '') {
+            # Fallback: find the script in current directory
+            $scriptPath = Get-Item -Path "$(Get-Location)\InheritanceHelper.ps1" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+        }
+        if (-not $scriptPath -or $scriptPath -eq '') {
+            throw "Could not determine script path for parallel processing"
         }
         
-        $hierarchy = Build-GroupHierarchy -InitialGroups $initialGroups `
-            -OrgUrl $orgUrl -DevOpsAuthHeader $devOpsToken.AuthHeader `
-            -GraphAuthHeader $graphToken.AuthHeader -TargetGroupName $TargetGroupName `
-            -ScriptPath $scriptPath
-        
-        Write-Host "Processed $($hierarchy.ProcessedGroups.Count) unique groups" -ForegroundColor Green
-        Write-Host "Found $($hierarchy.Relationships.Count) group relationships" -ForegroundColor Green
+        try {
+            $hierarchy = Build-GroupHierarchy -InitialGroups $initialGroups `
+                -OrgUrl $orgUrl -DevOpsAuthHeader $devOpsToken.AuthHeader `
+                -GraphAuthHeader $graphToken.AuthHeader -TargetGroupName $TargetGroupName `
+                -ScriptPath $scriptPath
+            
+            Write-Host "Processed $($hierarchy.ProcessedGroups.Count) unique groups" -ForegroundColor Green
+            Write-Host "Found $($hierarchy.Relationships.Count) group relationships" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Error building hierarchy: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "This may occur if the user has no inherited memberships." -ForegroundColor Gray
+            
+            Write-Host "`n=== RESULTS ===" -ForegroundColor Cyan
+            Write-Host "No inheritance paths found from user to group: $TargetGroupName" -ForegroundColor Yellow
+            Write-Host "User has $($initialGroups.Count) direct group membership(s), but no path to target group." -ForegroundColor Gray
+            return
+        }
         
         # Build all chains
         Write-Host "`nBuilding all inheritance chains..." -ForegroundColor Yellow

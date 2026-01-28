@@ -1,0 +1,16 @@
+# CSV export files
+*.csv
+
+# JSON export files
+*.json
+
+# PowerShell
+.PSScriptAnalyzerSettings.psd1
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
