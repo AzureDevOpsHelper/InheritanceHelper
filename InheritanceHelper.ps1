@@ -8,9 +8,6 @@ param (
     [Parameter(Mandatory = $false)]
     [string]$OrgName,
 
-    [Parameter(Mandatory = $false)]
-    [string]$ProjectName,
-
     [switch]$ExportJson
 )
 
@@ -199,6 +196,27 @@ function Get-GroupKey {
     else {
         return "name:$($Group.DisplayName)"
     }
+}
+
+function Get-FullyQualifiedGroupName {
+    param (
+        [PSCustomObject]$Group,
+        [hashtable]$GroupNameMap
+    )
+
+    if ($null -ne $Group.PrincipalName -and $Group.PrincipalName -ne "") {
+        return $Group.PrincipalName
+    }
+
+    if ($GroupNameMap -and $Group.DisplayName -and $GroupNameMap.ContainsKey($Group.DisplayName)) {
+        return $GroupNameMap[$Group.DisplayName]
+    }
+
+    if ($Group.Domain) {
+        return "[$($Group.Domain)]\\$($Group.DisplayName)"
+    }
+
+    return $Group.DisplayName
 }
 
 function Get-UserEntraGroups {
@@ -723,12 +741,9 @@ function Build-AllChains {
             }
         }
         
-        # Add chains from this initial group - only include chains with length > 1
-        # (single-element chains have no inheritance relationships)
+        # Add chains from this initial group - including single-element chains for visibility
         foreach ($chain in $chains) {
-            if ($chain.Count -gt 1) {
-                $allChains.Add($chain) | Out-Null
-            }
+            $allChains.Add($chain) | Out-Null
         }
     }
     
@@ -862,9 +877,6 @@ function Main {
         [Parameter(Mandatory = $true)]
         [string]$OrgName,
 
-        [Parameter(Mandatory = $false)]
-        [string]$ProjectName,
-
         [switch]$ExportJson
     )
 
@@ -974,11 +986,9 @@ function Main {
         
         # Find the target group to get its descriptor
         Write-Host "`nSearching for target group..." -ForegroundColor Yellow
-        if ($ProjectName) {
-            Write-Host "  Scoping search to project: $ProjectName" -ForegroundColor Gray
-        }
         
         $targetGroups = @()
+        $devOpsGroupNameMap = @{}
         $continuationToken = $null
         $pageCount = 0
         
@@ -992,20 +1002,23 @@ function Main {
             
             Write-Host "  Checking page $pageCount..." -ForegroundColor DarkGray
             $groupsResult = GET-AzureDevOpsRestAPI -RestAPIUrl $groupSearchUrl -Authheader $devOpsToken.AuthHeader
+
+            if ($groupsResult -and $groupsResult.results -and $groupsResult.results.value) {
+                foreach ($group in $groupsResult.results.value) {
+                    if ($group.displayName -and $group.principalName -and -not $devOpsGroupNameMap.ContainsKey($group.displayName)) {
+                        $devOpsGroupNameMap[$group.displayName] = $group.principalName
+                    }
+                }
+            }
             
             $matches = $groupsResult.results.value | Where-Object { 
-                $matchesName = ($_.principalName -eq $TargetGroupName -or
-                               $_.displayName -eq $TargetGroupName -or
-                               $_.principalName -like "*$TargetGroupName" -or
-                               $_.principalName -like "*\\$TargetGroupName" -or 
-                               $_.displayName -like "*$TargetGroupName")
-                
-                if ($ProjectName) {
-                    # If project specified, ensure it matches the scope
-                    $matchesName -and ($_.principalName -like "[$ProjectName]\\*" -or $_.domain -like "*$ProjectName*")
-                } else {
-                    $matchesName
-                }
+                # Check for exact matches first (including fully qualified names)
+                $_.principalName -eq $TargetGroupName -or
+                $_.displayName -eq $TargetGroupName -or
+                # Then check for partial matches
+                $_.principalName -like "*$TargetGroupName" -or
+                $_.principalName -like "*\\$TargetGroupName" -or 
+                $_.displayName -like "*$TargetGroupName"
             }
             
             if ($matches) {
@@ -1024,9 +1037,7 @@ function Main {
         $targetGroup = $null
         if ($targetGroups.Count -eq 0) {
             Write-Warning "No groups found matching: $TargetGroupName"
-            if (-not $ProjectName) {
-                Write-Host "Tip: Groups are scoped to projects. Try adding -ProjectName parameter" -ForegroundColor Yellow
-            }
+            Write-Host "Tip: Use fully qualified group names like '[TEAM FOUNDATION]\GroupName' or '[ProjectName]\GroupName'" -ForegroundColor Yellow
             return
         }
         elseif ($targetGroups.Count -eq 1) {
@@ -1040,7 +1051,7 @@ function Main {
                 Write-Host "      Display: $($targetGroups[$i].displayName)" -ForegroundColor Gray
                 Write-Host "      Domain: $($targetGroups[$i].domain)" -ForegroundColor Gray
             }
-            Write-Host "`nPlease re-run with -ProjectName to scope the search, or use the full group name." -ForegroundColor Yellow
+            Write-Host "`nPlease re-run with the fully qualified group name to be more specific." -ForegroundColor Yellow
             Write-Host "Example: -TargetGroupName '$($targetGroups[0].principalName)'" -ForegroundColor Gray
             return
         }
@@ -1138,10 +1149,13 @@ function Main {
             for ($i = 0; $i -lt $maxLength; $i++) {
                 if ($i -lt $chain.Count) {
                     $group = $chain[$i]
+                    $fqn = Get-FullyQualifiedGroupName -Group $group -GroupNameMap $devOpsGroupNameMap
+                    $row["Level_$i`_FQN"] = $fqn
                     $row["Level_$i`_DisplayName"] = $group.DisplayName
                     $row["Level_$i`_Origin"] = $group.Origin
                     $row["Level_$i`_Descriptor"] = $group.Descriptor
                 } else {
+                    $row["Level_$i`_FQN"] = ""
                     $row["Level_$i`_DisplayName"] = ""
                     $row["Level_$i`_Origin"] = ""
                     $row["Level_$i`_Descriptor"] = ""
@@ -1169,11 +1183,14 @@ function Main {
         if ($chainsWithTarget) {
             Write-Host "Found $($chainsWithTarget.Count) chain(s) containing target group!" -ForegroundColor Green
             
-            # Truncate each chain at the target group and remove duplicates
-            $truncatedChains = @()
-            $uniqueChainSignatures = @{}
+            # Deduplicate by the path up to the target, but keep full chains for display
+            $displayChains = [System.Collections.ArrayList]@()
+            $uniquePathSignatures = @{}
             
-            foreach ($chain in $chainsWithTarget) {
+            foreach ($chainItem in $chainsWithTarget) {
+                # Ensure chain is an array
+                $chain = @($chainItem)
+                
                 # Find the index of the target group in this chain
                 $targetIndex = -1
                 for ($i = 0; $i -lt $chain.Count; $i++) {
@@ -1186,28 +1203,18 @@ function Main {
                 }
                 
                 if ($targetIndex -ge 0) {
-                    # Truncate the chain to only include groups up to and including the target
-                    $truncatedChain = $chain[0..$targetIndex]
+                    $prefix = @($chain[0..$targetIndex])
+                    $signature = ($prefix | ForEach-Object { "$(Get-FullyQualifiedGroupName -Group $_ -GroupNameMap $devOpsGroupNameMap)|$($_.Origin)|$($_.Descriptor)" }) -join "::"
                     
-                    # Create a signature for deduplication (concatenate all group names)
-                    $signature = ($truncatedChain | ForEach-Object { "$($_.DisplayName)|$($_.Origin)|$($_.Descriptor)" }) -join "::"
-                    
-                    # Only add if we haven't seen this exact path before
-                    if (-not $uniqueChainSignatures.ContainsKey($signature)) {
-                        $uniqueChainSignatures[$signature] = $true
-                        $truncatedChains += ,@($truncatedChain)
+                    if (-not $uniquePathSignatures.ContainsKey($signature)) {
+                        $uniquePathSignatures[$signature] = $true
+                        [void]$displayChains.Add($chain)
                     }
                 }
             }
             
-            $chainsWithTarget = $truncatedChains
-            Write-Host "After truncation and deduplication: $($chainsWithTarget.Count) unique path(s)" -ForegroundColor Green
-            
-            Write-Host "`nExample chain to target:" -ForegroundColor Cyan
-            $exampleChain = $chainsWithTarget[0]
-            for ($i = 0; $i -lt $exampleChain.Count; $i++) {
-                Write-Host "  $i. $($exampleChain[$i].DisplayName) (Origin: $($exampleChain[$i].Origin))" -ForegroundColor White
-            }
+            $chainsWithTarget = $displayChains
+            Write-Host "After deduplication by path-to-target: $($chainsWithTarget.Count) unique path(s)" -ForegroundColor Green
         } else {
             Write-Host "Target group not found in any chains" -ForegroundColor Red
         }
@@ -1238,10 +1245,30 @@ function Main {
             Write-Host "`n--- Path $($i + 1) ---" -ForegroundColor Yellow
             Write-Host "User: $($user.displayName)" -ForegroundColor White
             $chain = $chainsWithTarget[$i]
-            for ($j = 0; $j -lt $chain.Count; $j++) {
-                $indent = "  " * ($j + 1)
-                $arrow = if ($j -lt $chain.Count - 1) { " └─>" } else { " └─>" }
-                Write-Host "$indent$arrow $($chain[$j].DisplayName) (Origin: $($chain[$j].Origin))" -ForegroundColor Cyan
+            if ($chain -ne $null -and $chain.Count -gt 0) {
+                $targetIndex = -1
+                for ($j = 0; $j -lt $chain.Count; $j++) {
+                    if ($chain[$j].DisplayName -eq $targetDisplayName -or 
+                        $chain[$j].DisplayName -eq $TargetGroupName -or 
+                        $chain[$j].PrincipalName -eq $TargetGroupName) {
+                        $targetIndex = $j
+                        break
+                    }
+                }
+
+                $endIndex = if ($targetIndex -ge 0) { $targetIndex } else { $chain.Count - 1 }
+
+                for ($j = 0; $j -le $endIndex; $j++) {
+                    $group = $chain[$j]
+                    if ($group -ne $null) {
+                        $indent = "  " * $j
+                        $arrow = " └─>"
+                        $fqn = Get-FullyQualifiedGroupName -Group $group -GroupNameMap $devOpsGroupNameMap
+                        Write-Host "$indent$arrow $fqn (Origin: $($group.Origin))" -ForegroundColor Cyan
+                    }
+                }
+            } else {
+                Write-Host "   (No group data in chain)" -ForegroundColor Red
             }
         }
         
@@ -1265,17 +1292,18 @@ if ($MyInvocation.InvocationName -ne '.') {
         [string]::IsNullOrWhiteSpace($TargetGroupName) -or 
         [string]::IsNullOrWhiteSpace($OrgName)) {
         
-        Write-Host "Usage: .\\Find-GroupInheritanceChains.ps1 -UserIdentifier <User> -TargetGroupName <Group> -OrgName <Org> [-ProjectName <Project>] [-ExportJson]" -ForegroundColor Yellow
+        Write-Host "Usage: .\\Find-GroupInheritanceChains.ps1 -UserIdentifier <User> -TargetGroupName <Group> -OrgName <Org> [-ExportJson]" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Parameters:" -ForegroundColor Cyan
         Write-Host "  -UserIdentifier  : User's display name, principal name, or email"
-        Write-Host "  -TargetGroupName : Name of the target group to find paths to"
+        Write-Host "  -TargetGroupName : Name or fully qualified name of the target group"
+        Write-Host "                     (e.g., 'Contributors' or '[ProjectName]\\Contributors')"
         Write-Host "  -OrgName         : Azure DevOps organization name"
-        Write-Host "  -ProjectName     : (Optional) Project name to scope the group search"
         Write-Host "  -ExportJson      : (Optional) Export the full hierarchy as JSON"
         Write-Host ""
-        Write-Host "Example:" -ForegroundColor Cyan
-        Write-Host '  .\\Find-GroupInheritanceChains.ps1 -UserIdentifier "john.doe@contoso.com" -TargetGroupName "Contributors" -OrgName "myorg" -ProjectName "MyProject"'
+        Write-Host "Examples:" -ForegroundColor Cyan
+        Write-Host '  .\\Find-GroupInheritanceChains.ps1 -UserIdentifier "john.doe@contoso.com" -TargetGroupName "[MyProject]\\Contributors" -OrgName "myorg"'
+        Write-Host '  .\\Find-GroupInheritanceChains.ps1 -UserIdentifier "john.doe@contoso.com" -TargetGroupName "[TEAM FOUNDATION]\\Build Admins" -OrgName "myorg"'
         Write-Host ""
         exit 1
     }
@@ -1286,9 +1314,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         TargetGroupName = $TargetGroupName
         OrgName         = $OrgName
         ExportJson      = $ExportJson
-    }
-    if ($ProjectName) {
-        $mainParams['ProjectName'] = $ProjectName
     }
     Main @mainParams
 }
