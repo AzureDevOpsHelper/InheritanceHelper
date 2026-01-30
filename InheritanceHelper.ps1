@@ -225,7 +225,7 @@ function Get-UserEntraGroups {
         [string]$GraphAuthHeader
     )
 
-    Write-Host "Getting user's Entra group memberships..." -ForegroundColor Yellow
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "Getting user's Entra group memberships..." -ForegroundColor Yellow }
     
     try {
         # Get user object first
@@ -238,7 +238,7 @@ function Get-UserEntraGroups {
         }
         
         $userId = $userResult.results.id
-        Write-Host "  Found user in Entra: $($userResult.results.displayName)" -ForegroundColor Green
+        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Found user in Entra: $($userResult.results.displayName)" -ForegroundColor Green }
         
         # Get DIRECT group memberships only
         # We'll expand them recursively to find what contains them
@@ -272,12 +272,12 @@ function Get-UserEntraGroups {
             $nextLink = if ($graphData.'@odata.nextLink') { $graphData.'@odata.nextLink' } else { $null }
             $groupsUrl = $nextLink
             if ($groupsUrl) {
-                Write-Host "    Fetching next page of Entra groups..." -ForegroundColor DarkGray
+                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "    Fetching next page of Entra groups..." -ForegroundColor DarkGray }
             }
             
         } while ($groupsUrl)
         
-        Write-Host "  Found $($aadGroups.Count) direct Entra group memberships" -ForegroundColor Green
+        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Found $($aadGroups.Count) direct Entra group memberships" -ForegroundColor Green }
         return $aadGroups
     }
     catch {
@@ -295,7 +295,7 @@ function Get-UserGroupMemberships {
         [string]$GraphAuthHeader
     )
 
-    Write-Host "Getting group memberships for user: $UserDescriptor"
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "Getting group memberships for user: $UserDescriptor" }
     
     # Get user's direct group memberships from Azure DevOps
     $vsspsUrl = $OrgUrl.Replace("dev.azure.com", "vssps.dev.azure.com")
@@ -322,7 +322,7 @@ function Get-UserGroupMemberships {
         }
     }
     
-    Write-Host "  Found $($groups.Count) Azure DevOps group memberships" -ForegroundColor Green
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Found $($groups.Count) Azure DevOps group memberships" -ForegroundColor Green }
     
     # Also get Entra groups (direct only)
     $aadGroups = Get-UserEntraGroups -UserPrincipalName $UserPrincipalName -GraphAuthHeader $GraphAuthHeader
@@ -336,7 +336,7 @@ function Get-UserGroupMemberships {
         $allGroups.Add($g) | Out-Null
     }
     
-    Write-Host "  Total: $($allGroups.Count) group memberships (DevOps direct + Entra direct)" -ForegroundColor Cyan
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Total: $($allGroups.Count) group memberships (DevOps direct + Entra direct)" -ForegroundColor Cyan }
     
     return @{
         Groups = $allGroups.ToArray()
@@ -414,7 +414,7 @@ function Expand-GroupMemberships {
             
             if ($devOpsGroup) {
                 # Found it! This Entra group is synced to DevOps
-                Write-Host "      ✓ Found in DevOps: $($devOpsGroup.principalName)" -ForegroundColor Cyan
+                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      ✓ Found in DevOps: $($devOpsGroup.principalName)" -ForegroundColor Cyan }
                 
                 try {
                     # Get what this DevOps group is a member of
@@ -423,7 +423,7 @@ function Expand-GroupMemberships {
                     
                     if ($devOpsMemberships -and $devOpsMemberships.results -and $devOpsMemberships.results.value) {
                         $parentCount = $devOpsMemberships.results.value.Count
-                        Write-Host "      Found $parentCount parent group(s)" -ForegroundColor DarkGray
+                        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      Found $parentCount parent group(s)" -ForegroundColor DarkGray }
                         
                         foreach ($membership in $devOpsMemberships.results.value) {
                             $containerDescriptor = $membership.containerDescriptor
@@ -432,7 +432,7 @@ function Expand-GroupMemberships {
                             
                             if ($groupResult -and $groupResult.results) {
                                 $parentGroup = $groupResult.results
-                                Write-Host "        → Parent: $($parentGroup.displayName) (Origin: $($parentGroup.origin))" -ForegroundColor DarkCyan
+                                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "        → Parent: $($parentGroup.displayName) (Origin: $($parentGroup.origin))" -ForegroundColor DarkCyan }
                                 
                                 $memberOf += [PSCustomObject]@{
                                     Descriptor    = $parentGroup.descriptor
@@ -446,17 +446,17 @@ function Expand-GroupMemberships {
                         }
                     }
                     else {
-                        Write-Host "      No parent groups found in DevOps" -ForegroundColor DarkGray
+                        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      No parent groups found in DevOps" -ForegroundColor DarkGray }
                     }
                 }
                 catch {
-                    Write-Host "      Error getting parent groups: $($_.Exception.Message)" -ForegroundColor DarkRed
+                    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      Error getting parent groups: $($_.Exception.Message)" -ForegroundColor DarkRed }
                 }
             }
             else {
                 # Not synced to DevOps yet, but we still need to traverse its Entra parents
                 # because a parent group might be synced and provide the connection
-                Write-Host "      ✗ Not synced to DevOps: $($Group.DisplayName) - checking Entra parents..." -ForegroundColor DarkGray
+                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      ✗ Not synced to DevOps: $($Group.DisplayName) - checking Entra parents..." -ForegroundColor DarkGray }
                 
                 try {
                     # Get Entra parent groups using Graph API
@@ -466,12 +466,12 @@ function Expand-GroupMemberships {
                     $graphResult = Invoke-RestMethod -Uri $graphUrl -Headers $graphHeaders -Method Get -ErrorAction Stop
                     
                     if ($graphResult.value -and $graphResult.value.Count -gt 0) {
-                        Write-Host "      Found $($graphResult.value.Count) Entra parent group(s)" -ForegroundColor DarkGray
+                        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      Found $($graphResult.value.Count) Entra parent group(s)" -ForegroundColor DarkGray }
                         
                         foreach ($entraParent in $graphResult.value) {
                             # Only process group objects (not other directory objects)
                             if ($entraParent.'@odata.type' -eq '#microsoft.graph.group') {
-                                Write-Host "        → Entra Parent: $($entraParent.displayName)" -ForegroundColor DarkCyan
+                                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "        → Entra Parent: $($entraParent.displayName)" -ForegroundColor DarkCyan }
                                 
                                 $memberOf += [PSCustomObject]@{
                                     Descriptor    = $null  # Will be populated if synced to DevOps
@@ -484,11 +484,11 @@ function Expand-GroupMemberships {
                             }
                         }
                     } else {
-                        Write-Host "      No Entra parent groups found" -ForegroundColor DarkGray
+                        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      No Entra parent groups found" -ForegroundColor DarkGray }
                     }
                 }
                 catch {
-                    Write-Host "      Error getting Entra parents: $($_.Exception.Message)" -ForegroundColor DarkRed
+                    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "      Error getting Entra parents: $($_.Exception.Message)" -ForegroundColor DarkRed }
                 }
             }
         }
@@ -527,7 +527,7 @@ function Build-GroupHierarchy {
     })
     
     # Build cache of AAD groups in DevOps (fetch once, use many times)
-    Write-Host "Building cache of Entra groups synced to DevOps..." -ForegroundColor Yellow
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "Building cache of Entra groups synced to DevOps..." -ForegroundColor Yellow }
     $aadGroupCache = [hashtable]::Synchronized(@{})
     try {
         $vsspsUrl = $OrgUrl.Replace("dev.azure.com", "vssps.dev.azure.com")
@@ -541,7 +541,7 @@ function Build-GroupHierarchy {
                     $aadGroupCache[$g.originId] = $g
                 }
             }
-            Write-Host "  Found $($aadGroupCache.Count) Entra groups synced to DevOps" -ForegroundColor Green
+            if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Found $($aadGroupCache.Count) Entra groups synced to DevOps" -ForegroundColor Green }
         }
     }
     catch {
@@ -555,7 +555,7 @@ function Build-GroupHierarchy {
     
     $currentLevel = 0
     
-    Write-Host "`nTraversing group hierarchy (with parallel processing)..." -ForegroundColor Yellow
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "`nTraversing group hierarchy (with parallel processing)..." -ForegroundColor Yellow }
     
     while ($sharedData['Queue'].Count -gt 0) {
         # Get current level groups
@@ -575,7 +575,7 @@ function Build-GroupHierarchy {
         $sharedData['TotalCount'] = $currentLevelGroups.Count
         $sharedData['ProcessedCount'].Value = 0
         
-        Write-Host "  Level $currentLevel - Processing $($currentLevelGroups.Count) groups in parallel..." -ForegroundColor Cyan
+        if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Level $currentLevel - Processing $($currentLevelGroups.Count) groups in parallel..." -ForegroundColor Cyan }
         
         # Process groups in parallel
         $currentLevelGroups | ForEach-Object -ThrottleLimit 5 -Parallel {
@@ -607,7 +607,7 @@ function Build-GroupHierarchy {
                 $processed = [System.Threading.Interlocked]::Increment($sharedData['ProcessedCount'])
                 $total = $sharedData['TotalCount']
                 $percent = [math]::Round(($processed / $total) * 100, 1)
-                Write-Host "    [$percent%] Expanding: $($currentGroup.DisplayName) (Origin: $($currentGroup.Origin), HasDescriptor: $($null -ne $currentGroup.Descriptor))" -ForegroundColor DarkGray
+                if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "    [$percent%] Expanding: $($currentGroup.DisplayName) (Origin: $($currentGroup.Origin), HasDescriptor: $($null -ne $currentGroup.Descriptor))" -ForegroundColor DarkGray }
                 
                 # Check if this is the target group
                 if ($currentGroup.DisplayName -eq $TargetGroupName -or $currentGroup.PrincipalName -eq $TargetGroupName) {
@@ -659,7 +659,7 @@ function Build-GroupHierarchy {
         
         # Stop early if we found target and processed enough levels
         if ($sharedData['FoundTarget'] -and $currentLevel -gt 10) {
-            Write-Host "  Target found and depth limit reached. Stopping traversal." -ForegroundColor Yellow
+            if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Target found and depth limit reached. Stopping traversal." -ForegroundColor Yellow }
             break
         }
         
@@ -684,7 +684,7 @@ function Build-AllChains {
         [int]$MaxDepth = 10
     )
     
-    Write-Host "Building relationship lookup table..." -ForegroundColor Cyan
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "Building relationship lookup table..." -ForegroundColor Cyan }
     # Build a lookup hashtable for O(1) parent lookups instead of O(n) Where-Object
     $parentLookup = @{}
     foreach ($rel in $Relationships) {
@@ -695,7 +695,7 @@ function Build-AllChains {
         $parentLookup[$key] += $rel.Parent
     }
     
-    Write-Host "Generating chains for $($InitialGroups.Count) initial groups (max depth: $MaxDepth)..." -ForegroundColor Cyan
+    if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "Generating chains for $($InitialGroups.Count) initial groups (max depth: $MaxDepth)..." -ForegroundColor Cyan }
     $allChains = [System.Collections.ArrayList]::new()
     $processedCount = 0
     
@@ -703,7 +703,7 @@ function Build-AllChains {
     foreach ($initialGroup in $InitialGroups) {
         $processedCount++
         if ($processedCount % 50 -eq 0) {
-            Write-Host "  Processed $processedCount/$($InitialGroups.Count) initial groups..." -ForegroundColor Gray
+            if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host "  Processed $processedCount/$($InitialGroups.Count) initial groups..." -ForegroundColor Gray }
         }
         
         # Start with a single-element chain
